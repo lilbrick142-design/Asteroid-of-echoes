@@ -1,0 +1,6 @@
+{
+  "name": "Asteroid of Echoes",
+  "description": "An atmospheric space adventure recovering lost musical fragments across drifting asteroids.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
