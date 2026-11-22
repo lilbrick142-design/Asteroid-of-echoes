@@ -1,77 +1,78 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { GameStage, CollectibleItem, PlayerControls, SongItem } from '../types';
-import { SONGS_DATA } from '../data/songs';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import {
+  ActiveExperienceState,
+  CollectibleItem,
+  GameStage,
+  PlayerControls,
+  SongItem,
+} from '../types';
+import { SONGS_DATA, TOTAL_SONGS_COUNT } from '../data/songs';
 import { TextureGenerator } from './TextureGenerator';
 import { audioEngine } from '../services/audioEngine';
+import { songExperienceManager } from '../services/SongExperienceManager';
+import { assetManager } from '../services/assetManager';
+import { qualitySettings } from '../services/qualitySettings';
+import { ExperienceSceneController } from '../experiences/ExperienceSceneController';
+import { CelestialEnvironmentSystem } from '../experiences/CelestialEnvironmentSystem';
+import { ExperienceSceneHandles, SceneBaselineState } from '../experiences/types';
+import { disposeObject3DTree } from '../experiences/utils/proceduralShapes';
 
 interface GameCanvasProps {
   gameStage: GameStage;
   collectedIds: number[];
+  activeExperience: ActiveExperienceState;
   onCollectSong: (song: SongItem) => void;
   onAllCollectedSequenceDone: () => void;
   playerControls: PlayerControls;
 }
 
-// Pre-allocated reusable math objects to avoid garbage collection during 60FPS animation loop
-const tempDummyMatrix = new THREE.Matrix4();
-const tempDummyPos = new THREE.Vector3();
-const tempDummyRot = new THREE.Euler();
-const tempDummyQuat = new THREE.Quaternion();
-const tempDummyScale = new THREE.Vector3();
+// Pre-allocated math helpers for zero-GC 60FPS render loop
+const _dummyMat = new THREE.Matrix4();
+const _dummyPos = new THREE.Vector3();
+const _dummyRot = new THREE.Euler();
+const _dummyQuat = new THREE.Quaternion();
+const _dummyScale = new THREE.Vector3();
 
-const tempCamDesiredPos = new THREE.Vector3();
-const tempCamLookTarget = new THREE.Vector3();
-const tempCamCurrentLook = new THREE.Vector3(0, 0.8, 0);
+const _camDesiredPos = new THREE.Vector3();
+const _camLookTarget = new THREE.Vector3();
+const _camCurrentLook = new THREE.Vector3(0, 0.8, 0);
 
-const tempRaycaster = new THREE.Raycaster();
-const tempMouseVec = new THREE.Vector2();
+const _raycaster = new THREE.Raycaster();
+const _mouseVec = new THREE.Vector2();
+
+const COLLECTIBLE_POSITIONS: [number, number, number][] = [
+  [0, 1.8, 11.5],      // 1. My Love Mine All Mine — Mitski
+  [-10.5, 1.8, 6.2],   // 2. Lady — Avenoir
+  [10.5, 1.8, 6.2],    // 3. Heather — Conan Gray
+  [-12.8, 1.8, -5.2],  // 4. Best Part — Daniel Caesar
+  [12.8, 1.8, -5.2],   // 5. Midnight Sun — Zara Larsson
+  [-6.8, 1.8, -13.2],  // 6. Come Over and Love Me
+  [6.8, 1.8, -13.2],   // 7. Beige — Yoke Lore
+];
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({
   gameStage,
   collectedIds,
+  activeExperience,
   onCollectSong,
   onAllCollectedSequenceDone,
   playerControls,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Internal Three.js instance refs
-  const sceneRef = useRef<THREE.Scene | null>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-
-  const shuttleMeshRef = useRef<THREE.Group | null>(null);
-  const playerMeshRef = useRef<THREE.Group | null>(null);
-  const playerContainerGlowRef = useRef<THREE.Mesh | null>(null);
-  const bridgeGroupRef = useRef<THREE.Group | null>(null);
-  const collectiblesGroupRef = useRef<THREE.Group | null>(null);
-  const orbitRingGroupRef = useRef<THREE.Group | null>(null);
-
-  // Instanced Meshes & Particle Refs
-  const rockInstancedMeshRef = useRef<THREE.InstancedMesh | null>(null);
-  const rockTransformsRef = useRef<
-    { pos: THREE.Vector3; rotSpeed: THREE.Vector3; floatFreq: number; scale: number; baseAngle: number; dist: number }[]
-  >([]);
-
-  const crystalInstancedMeshRef = useRef<THREE.InstancedMesh | null>(null);
-  const stardustPointsRef = useRef<THREE.Points | null>(null);
-  const stardustInitialYRef = useRef<Float32Array | null>(null);
-  const stardustSpeedsRef = useRef<Float32Array | null>(null);
-
-  // Smooth Player State Refs
-  const playerPosRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0.8, 0));
-  const playerVelRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
-  const playerTargetPosRef = useRef<THREE.Vector3 | null>(null);
-  const playerAngleRef = useRef<number>(0);
-
-  // Game Stage & Collection State Sync
-  const collectiblesDataRef = useRef<CollectibleItem[]>([]);
-  const collectedIdsRef = useRef<number[]>([]);
   const gameStageRef = useRef<GameStage>(gameStage);
-  const transitionProgressRef = useRef<number>(0);
-  const bridgeProgressRef = useRef<number>(0);
-  const completionTriggeredRef = useRef<boolean>(false);
+  const collectedIdsRef = useRef<number[]>(collectedIds);
+  const activeExperienceRef = useRef<ActiveExperienceState>(activeExperience);
+  const playerControlsRef = useRef<PlayerControls>(playerControls);
+  const onCollectSongRef = useRef(onCollectSong);
+  const onAllCollectedRef = useRef(onAllCollectedSequenceDone);
 
   useEffect(() => {
     gameStageRef.current = gameStage;
@@ -81,47 +82,102 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     collectedIdsRef.current = collectedIds;
   }, [collectedIds]);
 
-  // Main Three.js Setup Effect
   useEffect(() => {
-    if (!containerRef.current) return;
+    activeExperienceRef.current = activeExperience;
+  }, [activeExperience]);
 
-    // 1. Scene Setup
+  useEffect(() => {
+    playerControlsRef.current = playerControls;
+  }, [playerControls]);
+
+  useEffect(() => {
+    onCollectSongRef.current = onCollectSong;
+  }, [onCollectSong]);
+
+  useEffect(() => {
+    onAllCollectedRef.current = onAllCollectedSequenceDone;
+  }, [onAllCollectedSequenceDone]);
+
+  useEffect(() => {
+    const mountEl = containerRef.current;
+    if (!mountEl) return;
+
+    // Detect software WebGL once for rendering cost tuning (keep scene content identical)
+    const isSoftwareGl = (() => {
+      const gl = document.createElement('canvas').getContext('webgl2');
+      if (!gl) return true;
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
+      const gpu = String(gl.getParameter(param));
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+      return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+    })();
+
+    qualitySettings.initFromRenderer(isSoftwareGl);
+    const initialPreset = qualitySettings.getPreset();
+    let isDisposed = false;
+
+    // 1. Scene & Atmospheric Fog
     const scene = new THREE.Scene();
-    sceneRef.current = scene;
-    scene.fog = new THREE.FogExp2(0x180b38, 0.012);
+    const fog = new THREE.FogExp2(0x160a30, 0.011);
+    scene.fog = fog;
 
-    // 2. Camera Setup - Standard Perspective Camera
+    // 2. Camera
     const camera = new THREE.PerspectiveCamera(
       50,
       window.innerWidth / window.innerHeight,
       0.1,
       1000
     );
-    cameraRef.current = camera;
-    camera.position.set(0, 15, 45); // Initial intro space camera position
+    camera.position.set(0, 15, 45);
 
-    // 3. Renderer Setup
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+    // 3. Renderer + WebGL Context Recovery
+    const renderer = new THREE.WebGLRenderer({
+      antialias: !isSoftwareGl,
+      alpha: false,
+      powerPreference: 'high-performance',
+    });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.setPixelRatio(
+      isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, initialPreset.maxPixelRatio)
+    );
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
-    rendererRef.current = renderer;
+    renderer.toneMappingExposure = 1.12;
+    renderer.shadowMap.enabled = !isSoftwareGl && initialPreset.enableShadows;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    containerRef.current.innerHTML = '';
-    containerRef.current.appendChild(renderer.domElement);
+    const handleContextLost = (e: Event) => {
+      e.preventDefault();
+    };
+    const handleContextRestored = () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    };
+    renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
+    renderer.domElement.addEventListener('webglcontextrestored', handleContextRestored);
 
-    // 4. Atmospheric Lighting Setup
-    // Deep Indigo Ambient Light
-    const ambientLight = new THREE.AmbientLight(0x3e1f57, 1.2);
+    mountEl.innerHTML = '';
+    mountEl.appendChild(renderer.domElement);
+
+    // 4. Studio Reflection Environment
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const roomEnv = new RoomEnvironment();
+    const envTex = pmremGenerator.fromScene(roomEnv, 0.04).texture;
+    scene.environment = envTex;
+    roomEnv.dispose();
+    pmremGenerator.dispose();
+
+    // 5. Three-Point + Hemisphere Lighting Rig
+    const ambientLight = new THREE.AmbientLight(0x3e1f57, 1.0);
     scene.add(ambientLight);
 
-    // Warm Golden Starlight Directional Source
-    const sunLight = new THREE.DirectionalLight(0xffd166, 1.6);
+    const hemiLight = new THREE.HemisphereLight(0x8ecae6, 0x241438, 0.78);
+    hemiLight.position.set(0, 50, 0);
+    scene.add(hemiLight);
+
+    const sunLight = new THREE.DirectionalLight(0xffd166, 1.55);
     sunLight.position.set(35, 55, 25);
-    sunLight.castShadow = true;
+    sunLight.castShadow = !isSoftwareGl && initialPreset.enableShadows;
     sunLight.shadow.mapSize.width = 1024;
     sunLight.shadow.mapSize.height = 1024;
     sunLight.shadow.camera.near = 10;
@@ -131,85 +187,114 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     sunLight.shadow.camera.top = 28;
     sunLight.shadow.camera.bottom = -28;
     sunLight.shadow.bias = -0.0005;
+    sunLight.shadow.normalBias = 0.02;
     scene.add(sunLight);
 
-    // Cyan Atmospheric Accent Point Light
-    const cyanPointLight = new THREE.PointLight(0x4cc9f0, 2.5, 70);
+    const cyanPointLight = new THREE.PointLight(0x4cc9f0, 2.2, 70);
     cyanPointLight.position.set(-18, 15, 12);
     scene.add(cyanPointLight);
 
-    // Magenta Atmospheric Accent Point Light
-    const pinkPointLight = new THREE.PointLight(0xf72585, 2.2, 70);
+    const pinkPointLight = new THREE.PointLight(0xf72585, 2.0, 70);
     pinkPointLight.position.set(18, 15, -12);
     scene.add(pinkPointLight);
 
-    // 5. Starfield Skybox Sphere
+    // 6. Starfield Skybox + Reusable Celestial Environment System
     const starTexture = TextureGenerator.createStarfieldTexture();
-    const skyGeo = new THREE.SphereGeometry(300, 32, 32);
-    const skyMat = new THREE.MeshBasicMaterial({
-      map: starTexture,
-      side: THREE.BackSide,
-    });
-    const skyMesh = new THREE.Mesh(skyGeo, skyMat);
+    const skyMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(300, 32, 32),
+      new THREE.MeshBasicMaterial({ map: starTexture, side: THREE.BackSide })
+    );
     scene.add(skyMesh);
 
-    // 6. Background Celestial Bodies (Earth & Moon)
-    const earthGeo = new THREE.SphereGeometry(18, 32, 32);
-    const earthMat = new THREE.MeshStandardMaterial({
-      color: 0x1d3557,
-      roughness: 0.6,
-      metalness: 0.2,
-      emissive: 0x0a1128,
-    });
-    const earthMesh = new THREE.Mesh(earthGeo, earthMat);
+    const celestialSystem = new CelestialEnvironmentSystem(isSoftwareGl);
+    celestialSystem.applyQualityPreset(initialPreset, isSoftwareGl);
+    scene.add(celestialSystem.rootGroup);
+
+    // 7. Distant Earth (Detailed Continents + Atmospheric Rim) & Target Moon (CC0 PBR Maps)
+    const maxAniso = renderer.capabilities.getMaxAnisotropy();
+    const earthTex = TextureGenerator.createEarthTexture();
+    earthTex.anisotropy = Math.min(4, maxAniso);
+    const earthMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(18, 36, 36),
+      new THREE.MeshStandardMaterial({
+        map: earthTex,
+        roughness: 0.56,
+        metalness: 0.08,
+        emissive: 0x091632,
+        emissiveIntensity: 0.35,
+      })
+    );
     earthMesh.position.set(-65, 28, -130);
     scene.add(earthMesh);
 
-    // Earth Atmosphere Glow
-    const atmosphereGeo = new THREE.SphereGeometry(18.8, 32, 32);
-    const atmosphereMat = new THREE.MeshBasicMaterial({
-      color: 0x4cc9f0,
-      transparent: true,
-      opacity: 0.25,
-      side: THREE.BackSide,
-    });
-    const atmosphereMesh = new THREE.Mesh(atmosphereGeo, atmosphereMat);
+    const atmosphereMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(19.2, 36, 36),
+      new THREE.ShaderMaterial({
+        vertexShader: `
+          varying vec3 vNormal;
+          varying vec3 vViewDir;
+          void main() {
+            vNormal = normalize(normalMatrix * normal);
+            vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+            vViewDir = normalize(-mvPos.xyz);
+            gl_Position = projectionMatrix * mvPos;
+          }
+        `,
+        fragmentShader: `
+          varying vec3 vNormal;
+          varying vec3 vViewDir;
+          void main() {
+            float rim = pow(clamp(0.75 + dot(normalize(vNormal), normalize(vViewDir)), 0.0, 1.0), 2.4);
+            gl_FragColor = vec4(0.32, 0.78, 0.98, rim * 0.55);
+          }
+        `,
+        transparent: true,
+        side: THREE.BackSide,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      })
+    );
     earthMesh.add(atmosphereMesh);
 
-    // Glowing Target Moon
-    const moonGeo = new THREE.SphereGeometry(9, 32, 32);
     const moonMat = new THREE.MeshStandardMaterial({
       color: 0xf4f1de,
-      emissive: 0xe0e1dd,
-      emissiveIntensity: 0.2,
-      roughness: 0.8,
+      emissive: 0x3b3d4a,
+      emissiveIntensity: 0.25,
+      roughness: 0.88,
     });
-    const moonMesh = new THREE.Mesh(moonGeo, moonMat);
+    const moonMesh = new THREE.Mesh(new THREE.SphereGeometry(9.5, 36, 36), moonMat);
     moonMesh.position.set(95, 45, -170);
     scene.add(moonMesh);
 
-    // 7. Stylized Space Shuttle (Intro sequence actor)
-    const shuttleGroup = new THREE.Group();
-    shuttleMeshRef.current = shuttleGroup;
+    assetManager
+      .loadPbrTextureSet('/assets/textures/moon_01', 'moon_01', 1, Math.min(4, maxAniso))
+      .then((pbr) => {
+        if (!pbr || isDisposed) return;
+        moonMat.map = pbr.map;
+        moonMat.normalMap = pbr.normalMap;
+        moonMat.normalScale.set(0.85, 0.85);
+        moonMat.roughnessMap = pbr.roughnessMap;
+        moonMat.color.setHex(0xffffff);
+        moonMat.needsUpdate = true;
+      });
 
-    const bodyGeo = new THREE.ConeGeometry(1.2, 5, 8);
-    bodyGeo.rotateX(Math.PI / 2);
-    const bodyMat = new THREE.MeshStandardMaterial({
-      color: 0xf8f9fa,
-      roughness: 0.3,
-      metalness: 0.6,
-    });
-    const shuttleBody = new THREE.Mesh(bodyGeo, bodyMat);
-    shuttleGroup.add(shuttleBody);
+    // 8. Space Shuttle (Intro sequence)
+    const shuttleGroup = new THREE.Group();
+    const shuttleBodyGeo = new THREE.ConeGeometry(1.2, 5, 8);
+    shuttleBodyGeo.rotateX(Math.PI / 2);
+    shuttleGroup.add(
+      new THREE.Mesh(
+        shuttleBodyGeo,
+        new THREE.MeshStandardMaterial({ color: 0xf8f9fa, roughness: 0.3, metalness: 0.6 })
+      )
+    );
 
     const visorGeo = new THREE.SphereGeometry(0.7, 16, 16, 0, Math.PI * 2, 0, Math.PI / 2);
     visorGeo.rotateX(Math.PI / 2);
-    const visorMat = new THREE.MeshStandardMaterial({
-      color: 0x00b4d8,
-      roughness: 0.1,
-      metalness: 0.9,
-    });
-    const visor = new THREE.Mesh(visorGeo, visorMat);
+    const visor = new THREE.Mesh(
+      visorGeo,
+      new THREE.MeshStandardMaterial({ color: 0x00b4d8, roughness: 0.1, metalness: 0.9 })
+    );
     visor.position.set(0, 0.4, 0.8);
     shuttleGroup.add(visor);
 
@@ -234,258 +319,307 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
     const thrusterGeo = new THREE.CylinderGeometry(0.4, 0.1, 1.2, 16);
     thrusterGeo.rotateX(Math.PI / 2);
-    const thrusterMat = new THREE.MeshBasicMaterial({ color: 0x48cae4, transparent: true, opacity: 0.85 });
-    const thruster = new THREE.Mesh(thrusterGeo, thrusterMat);
+    const thruster = new THREE.Mesh(
+      thrusterGeo,
+      new THREE.MeshBasicMaterial({ color: 0x48cae4, transparent: true, opacity: 0.85 })
+    );
     thruster.position.set(0, 0, -2.8);
     shuttleGroup.add(thruster);
-
     shuttleGroup.position.set(0, 8, 12);
     scene.add(shuttleGroup);
 
-    // 8. Main Asteroid Island (Level 1 Terrain)
-    const asteroidGroup = new THREE.Group();
-
-    // Island Terrain Mesh
-    const islandGeo = new THREE.CylinderGeometry(22, 17, 5.5, 28, 4);
+    // 9. Main Asteroid Island Terrain (CC0 dark_rock_02 PBR + Glowing Mineral Fissures)
+    const islandGeo = new THREE.CylinderGeometry(22, 17, 5.5, 36, 5);
     const posAttr = islandGeo.attributes.position;
     for (let i = 0; i < posAttr.count; i++) {
       const vx = posAttr.getX(i);
       const vy = posAttr.getY(i);
       const vz = posAttr.getZ(i);
-      const noise = Math.sin(vx * 0.35) * Math.cos(vz * 0.35) * 1.3;
+      const noise = Math.sin(vx * 0.35) * Math.cos(vz * 0.35) * 1.15;
       posAttr.setY(i, vy + noise);
     }
     islandGeo.computeVertexNormals();
 
     const rockTexture = TextureGenerator.createAsteroidRockTexture();
+    rockTexture.anisotropy = Math.min(4, maxAniso);
     const islandMat = new THREE.MeshStandardMaterial({
-      color: 0x422f60,
-      roughness: 0.8,
-      metalness: 0.15,
+      color: 0x4b386b,
+      roughness: 0.84,
+      metalness: 0.14,
       map: rockTexture,
       flatShading: true,
     });
     const islandMesh = new THREE.Mesh(islandGeo, islandMat);
     islandMesh.position.set(0, -2.75, 0);
     islandMesh.receiveShadow = true;
-    asteroidGroup.add(islandMesh);
+    scene.add(islandMesh);
 
-    // Glowing Stardust Pathway Ring
-    const pathGeo = new THREE.RingGeometry(7.5, 18.2, 36);
+    assetManager
+      .loadPbrTextureSet('/assets/textures/dark_rock_02', 'dark_rock_02', 3, Math.min(4, maxAniso))
+      .then((pbr) => {
+        if (!pbr || isDisposed) return;
+        islandMat.map = pbr.map;
+        islandMat.normalMap = pbr.normalMap;
+        islandMat.normalScale.set(0.75, 0.75);
+        islandMat.roughnessMap = pbr.roughnessMap;
+        islandMat.flatShading = false;
+        islandMat.needsUpdate = true;
+      });
+
+    const pathGeo = new THREE.RingGeometry(7.5, 18.2, 48);
     pathGeo.rotateX(-Math.PI / 2);
     const pathMat = new THREE.MeshStandardMaterial({
       color: 0x7209b7,
       emissive: 0xb5179e,
-      emissiveIntensity: 0.4,
+      emissiveIntensity: 0.38,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.42,
       side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     });
     const pathMesh = new THREE.Mesh(pathGeo, pathMat);
     pathMesh.position.set(0, 0.05, 0);
     pathMesh.receiveShadow = true;
-    asteroidGroup.add(pathMesh);
+    scene.add(pathMesh);
 
-    scene.add(asteroidGroup);
-
-    // 9. INSTANCED MESH: Bioluminescent Crystals (Optimized)
-    const crystalCount = 22;
-    const crystalGeo = new THREE.ConeGeometry(0.38, 2.2, 5);
-    const crystalMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      emissive: 0xffffff,
-      emissiveIntensity: 0.85,
-      roughness: 0.2,
-      flatShading: true,
+    // Subtle glowing mineral vein fissures etched across the outer asteroid rim
+    const fissureGroup = new THREE.Group();
+    const fissureMat = new THREE.MeshBasicMaterial({
+      color: 0x4cc9f0,
+      transparent: true,
+      opacity: 0.36,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
     });
-    const crystalInstanced = new THREE.InstancedMesh(crystalGeo, crystalMat, crystalCount);
-    crystalInstancedMeshRef.current = crystalInstanced;
+    for (let f = 0; f < 6; f++) {
+      const fGeo = new THREE.RingGeometry(15.2 + (f % 2) * 1.6, 15.42 + (f % 2) * 1.6, 12, 1, 0, Math.PI * 0.28);
+      fGeo.rotateX(-Math.PI / 2);
+      const fissure = new THREE.Mesh(fGeo, fissureMat);
+      fissure.position.y = 0.08;
+      fissure.rotation.y = (f / 6) * Math.PI * 2 + 0.3;
+      fissureGroup.add(fissure);
+    }
+    scene.add(fissureGroup);
 
+    // 10. Instanced Multi-Prism Bioluminescent Crystal Clusters
+    const shardA = new THREE.ConeGeometry(0.32, 2.2, 5);
+    shardA.translate(0, 1.1, 0);
+    const shardB = new THREE.ConeGeometry(0.22, 1.5, 5);
+    shardB.rotateZ(0.28);
+    shardB.translate(0.26, 0.72, 0.14);
+    const shardC = new THREE.ConeGeometry(0.19, 1.25, 5);
+    shardC.rotateX(-0.26);
+    shardC.translate(-0.24, 0.6, -0.16);
+    const crystalClusterGeo = mergeGeometries([shardA, shardB, shardC]) ?? new THREE.ConeGeometry(0.38, 2.2, 5);
+    shardA.dispose();
+    shardB.dispose();
+    shardC.dispose();
+
+    const crystalCount = 22;
+    const crystalInstanced = new THREE.InstancedMesh(
+      crystalClusterGeo,
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        emissive: 0xffffff,
+        emissiveIntensity: 0.85,
+        roughness: 0.18,
+        metalness: 0.15,
+        flatShading: true,
+      }),
+      crystalCount
+    );
     const cyanColor = new THREE.Color(0x4cc9f0);
     const pinkColor = new THREE.Color(0xf72585);
-
     for (let i = 0; i < crystalCount; i++) {
       const angle = (i / crystalCount) * Math.PI * 2 + Math.random() * 0.15;
-      const radius = 11.5 + Math.random() * 8.0;
-      const x = Math.cos(angle) * radius;
-      const z = Math.sin(angle) * radius;
-      const y = 0.8;
-
-      tempDummyPos.set(x, y, z);
-      tempDummyRot.set((Math.random() - 0.5) * 0.4, Math.random() * Math.PI, (Math.random() - 0.5) * 0.4);
-      tempDummyScale.set(1 + Math.random() * 0.4, 0.8 + Math.random() * 0.6, 1 + Math.random() * 0.4);
-
-      tempDummyMatrix.compose(tempDummyPos, tempDummyQuat.setFromEuler(tempDummyRot), tempDummyScale);
-      crystalInstanced.setMatrixAt(i, tempDummyMatrix);
+      const radius = 14.2 + Math.random() * 5.6;
+      _dummyPos.set(Math.cos(angle) * radius, 0.05, Math.sin(angle) * radius);
+      _dummyRot.set((Math.random() - 0.5) * 0.25, Math.random() * Math.PI, (Math.random() - 0.5) * 0.25);
+      _dummyScale.set(0.95 + Math.random() * 0.35, 0.8 + Math.random() * 0.55, 0.95 + Math.random() * 0.35);
+      _dummyMat.compose(_dummyPos, _dummyQuat.setFromEuler(_dummyRot), _dummyScale);
+      crystalInstanced.setMatrixAt(i, _dummyMat);
       crystalInstanced.setColorAt(i, i % 2 === 0 ? cyanColor : pinkColor);
     }
     crystalInstanced.instanceMatrix.needsUpdate = true;
     if (crystalInstanced.instanceColor) crystalInstanced.instanceColor.needsUpdate = true;
+    crystalInstanced.computeBoundingSphere();
     scene.add(crystalInstanced);
 
-    // 10. INSTANCED MESH: Decorative Floating Asteroid Fragments (Non-colliding, high performance)
-    const rockCount = 38;
-    const rockGeo = new THREE.DodecahedronGeometry(1.2, 1);
-    const rockMat = new THREE.MeshStandardMaterial({
-      color: 0x4a3b69,
-      roughness: 0.85,
-      metalness: 0.2,
-      flatShading: true,
+    // Perimeter CC0 boulders (moon_rock_03) & cosmic moss tufts (shrub_sorrel_01)
+    const perimeterPropsGroup = new THREE.Group();
+    scene.add(perimeterPropsGroup);
+    Promise.all([
+      assetManager.loadModelClone('/assets/models/moon_rock_03/moon_rock_03_1k.gltf', 2.4),
+      assetManager.loadModelClone('/assets/models/shrub_sorrel_01/shrub_sorrel_01_1k.gltf', 1.15),
+    ]).then(([rockTemplate, mossTemplate]) => {
+      if (isDisposed) return;
+      if (rockTemplate) {
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * Math.PI * 2 + 0.32;
+          const r = 18.6 + (i % 2) * 1.4;
+          const b = rockTemplate.clone(true);
+          b.userData.sharedAsset = true;
+          b.position.set(Math.cos(a) * r, -0.35, Math.sin(a) * r);
+          b.rotation.y = a * 2.1;
+          b.scale.setScalar(0.68 + (i % 3) * 0.28);
+          perimeterPropsGroup.add(b);
+        }
+      }
+      if (mossTemplate) {
+        for (let i = 0; i < 12; i++) {
+          const a = (i / 12) * Math.PI * 2 + 0.14;
+          const r = 15.8 + (i % 3) * 1.4;
+          const m = mossTemplate.clone(true);
+          m.userData.sharedAsset = true;
+          m.position.set(Math.cos(a) * r, -0.1, Math.sin(a) * r);
+          m.rotation.y = a * 1.7;
+          m.scale.setScalar(0.75 + (i % 2) * 0.35);
+          perimeterPropsGroup.add(m);
+        }
+      }
     });
-    const rockInstanced = new THREE.InstancedMesh(rockGeo, rockMat, rockCount);
-    rockInstancedMeshRef.current = rockInstanced;
 
-    const rockTransforms = [];
+    // 11. Instanced Floating Asteroid Rocks (upgraded asynchronously to CC0 moon_rock_02 geometry)
+    const rockCount = 38;
+    const rockInstanced = new THREE.InstancedMesh<THREE.BufferGeometry, THREE.Material>(
+      new THREE.DodecahedronGeometry(1.2, 1),
+      new THREE.MeshStandardMaterial({
+        color: 0x5c4d7d,
+        roughness: 0.85,
+        metalness: 0.18,
+        flatShading: true,
+      }),
+      rockCount
+    );
+    rockInstanced.frustumCulled = false;
+    const rockTransforms: {
+      pos: THREE.Vector3;
+      rotSpeed: THREE.Vector3;
+      floatFreq: number;
+      scale: number;
+    }[] = [];
     for (let i = 0; i < rockCount; i++) {
       const baseAngle = (i / rockCount) * Math.PI * 2;
-      const dist = 22 + Math.random() * 12;
-      const initialPosY = (Math.random() - 0.5) * 8 + 2.0;
-
+      const dist = 23.0 + Math.random() * 12;
       const pos = new THREE.Vector3(
         Math.cos(baseAngle) * dist,
-        initialPosY,
+        (Math.random() - 0.5) * 8 + 2.0,
         Math.sin(baseAngle) * dist
       );
-
-      const rotSpeed = new THREE.Vector3(
-        (Math.random() - 0.5) * 0.6,
-        (Math.random() - 0.5) * 0.8,
-        (Math.random() - 0.5) * 0.6
-      );
-
-      const scale = 0.8 + Math.random() * 1.6;
-      const floatFreq = 0.8 + Math.random() * 1.5;
-
-      rockTransforms.push({ pos, rotSpeed, floatFreq, scale, baseAngle, dist });
-
-      tempDummyPos.copy(pos);
-      tempDummyRot.set(Math.random() * Math.PI, Math.random() * Math.PI, 0);
-      tempDummyScale.setScalar(scale);
-      tempDummyMatrix.compose(tempDummyPos, tempDummyQuat.setFromEuler(tempDummyRot), tempDummyScale);
-      rockInstanced.setMatrixAt(i, tempDummyMatrix);
+      rockTransforms.push({
+        pos,
+        rotSpeed: new THREE.Vector3(
+          (Math.random() - 0.5) * 0.5,
+          (Math.random() - 0.5) * 0.7,
+          (Math.random() - 0.5) * 0.5
+        ),
+        floatFreq: 0.8 + Math.random() * 1.5,
+        scale: 0.8 + Math.random() * 1.4,
+      });
     }
-    rockTransformsRef.current = rockTransforms;
-    rockInstanced.instanceMatrix.needsUpdate = true;
     scene.add(rockInstanced);
 
-    // 11. Floating Stardust Particle System
-    const particleCount = 280;
+    assetManager
+      .loadFirstMeshData('/assets/models/moon_rock_02/moon_rock_02_1k.gltf', 2.4)
+      .then((meshData) => {
+        if (!meshData || isDisposed) return;
+        rockInstanced.geometry.dispose();
+        meshData.geometry.center();
+        rockInstanced.geometry = meshData.geometry;
+        rockInstanced.material = meshData.material;
+      });
+
+    // 12. Stardust Particles
+    const particleCount = 260;
     const stardustGeo = new THREE.BufferGeometry();
     const stardustPositions = new Float32Array(particleCount * 3);
     const stardustColors = new Float32Array(particleCount * 3);
     const stardustInitialY = new Float32Array(particleCount);
     const stardustSpeeds = new Float32Array(particleCount);
-
     const paletteColors = [
       new THREE.Color(0x4cc9f0),
       new THREE.Color(0xf72585),
       new THREE.Color(0xffd166),
       new THREE.Color(0x7209b7),
     ];
-
     for (let i = 0; i < particleCount; i++) {
       const angle = Math.random() * Math.PI * 2;
       const radius = Math.random() * 32.0;
-      const x = Math.cos(angle) * radius;
       const y = Math.random() * 12.0 + 0.5;
-      const z = Math.sin(angle) * radius;
-
-      stardustPositions[i * 3] = x;
+      stardustPositions[i * 3] = Math.cos(angle) * radius;
       stardustPositions[i * 3 + 1] = y;
-      stardustPositions[i * 3 + 2] = z;
-
+      stardustPositions[i * 3 + 2] = Math.sin(angle) * radius;
       stardustInitialY[i] = y;
       stardustSpeeds[i] = 1.0 + Math.random() * 2.0;
-
-      const pColor = paletteColors[Math.floor(Math.random() * paletteColors.length)];
-      stardustColors[i * 3] = pColor.r;
-      stardustColors[i * 3 + 1] = pColor.g;
-      stardustColors[i * 3 + 2] = pColor.b;
+      const pc = paletteColors[i % paletteColors.length];
+      stardustColors[i * 3] = pc.r;
+      stardustColors[i * 3 + 1] = pc.g;
+      stardustColors[i * 3 + 2] = pc.b;
     }
-
     stardustGeo.setAttribute('position', new THREE.BufferAttribute(stardustPositions, 3));
     stardustGeo.setAttribute('color', new THREE.BufferAttribute(stardustColors, 3));
-
-    const stardustMat = new THREE.PointsMaterial({
-      size: 0.45,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.85,
-      blending: THREE.AdditiveBlending,
-    });
-
-    const stardustPoints = new THREE.Points(stardustGeo, stardustMat);
-    stardustPointsRef.current = stardustPoints;
-    stardustInitialYRef.current = stardustInitialY;
-    stardustSpeedsRef.current = stardustSpeeds;
+    const stardustPoints = new THREE.Points(
+      stardustGeo,
+      new THREE.PointsMaterial({
+        size: 0.42,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.82,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      })
+    );
     scene.add(stardustPoints);
 
-    // 12. Astronaut Character Model (Player)
+    // 13. Astronaut Player Model (Composite multi-part group)
     const playerGroup = new THREE.Group();
-    playerMeshRef.current = playerGroup;
-
-    // Body suit
-    const suitMat = new THREE.MeshStandardMaterial({ color: 0xf8f9fa, roughness: 0.35, metalness: 0.1 });
-    const suitGeo = new THREE.CapsuleGeometry(0.45, 0.7, 8, 16);
-    const suitMesh = new THREE.Mesh(suitGeo, suitMat);
+    const suitMesh = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.45, 0.7, 8, 16),
+      new THREE.MeshStandardMaterial({ color: 0xf8f9fa, roughness: 0.35, metalness: 0.1 })
+    );
     suitMesh.position.y = 0.8;
-    suitMesh.castShadow = true;
+    suitMesh.castShadow = !isSoftwareGl;
     playerGroup.add(suitMesh);
 
-    // Helmet visor
-    const helmetMat = new THREE.MeshStandardMaterial({
-      color: 0xffb703,
-      metalness: 0.95,
-      roughness: 0.05,
-    });
-    const helmetGeo = new THREE.SphereGeometry(0.38, 16, 16);
-    const helmetMesh = new THREE.Mesh(helmetGeo, helmetMat);
+    const helmetMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.38, 16, 16),
+      new THREE.MeshStandardMaterial({ color: 0xffb703, metalness: 0.95, roughness: 0.05 })
+    );
     helmetMesh.position.set(0, 1.15, 0.15);
     playerGroup.add(helmetMesh);
 
-    // Container backpack
-    const backpackGeo = new THREE.BoxGeometry(0.5, 0.6, 0.35);
-    const backpackMat = new THREE.MeshStandardMaterial({ color: 0x3d405b, roughness: 0.5 });
-    const backpack = new THREE.Mesh(backpackGeo, backpackMat);
+    const backpack = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.6, 0.35),
+      new THREE.MeshStandardMaterial({ color: 0x3d405b, roughness: 0.5 })
+    );
     backpack.position.set(0, 0.85, -0.38);
     playerGroup.add(backpack);
 
-    // Glowing core crystal inside container
-    const containerGeo = new THREE.OctahedronGeometry(0.22);
-    const containerMat = new THREE.MeshStandardMaterial({
+    const containerCoreMat = new THREE.MeshStandardMaterial({
       color: 0x4cc9f0,
       emissive: 0x4cc9f0,
       emissiveIntensity: 0.9,
       roughness: 0.1,
     });
-    const containerCore = new THREE.Mesh(containerGeo, containerMat);
+    const containerCore = new THREE.Mesh(new THREE.OctahedronGeometry(0.22), containerCoreMat);
     containerCore.position.set(0, 0.85, -0.58);
-    playerContainerGlowRef.current = containerCore;
     playerGroup.add(containerCore);
 
+    const playerPosRef = { current: new THREE.Vector3(0, 0.8, 0) };
+    const playerVel = new THREE.Vector3();
+    let playerTargetPos: THREE.Vector3 | null = null;
+    let playerAngle = 0;
     playerGroup.position.copy(playerPosRef.current);
     scene.add(playerGroup);
 
-    // 13. Album Collectibles Creation (10 Floating Albums around Terrain)
+    // 14. Seven Album Collectibles
     const collectiblesGroup = new THREE.Group();
-    collectiblesGroupRef.current = collectiblesGroup;
     const collectiblesData: CollectibleItem[] = [];
 
-    const positions: [number, number, number][] = [
-      [0, 1.8, 12],     // 1. Mine All Mine - Mitski (Near entry point)
-      [-9, 1.8, 8],     // 2. What Once Was - Her's
-      [9, 1.8, 8],      // 3. Beige - Yoke Lore
-      [-14, 1.8, 0],    // 4. Space Song
-      [14, 1.8, 0],     // 5. Resonance
-      [-11, 1.8, -9],   // 6. Floating in Space
-      [11, 1.8, -9],    // 7. Lunar Horizon
-      [-5, 1.8, -14],   // 8. Starlight Drift
-      [5, 1.8, -14],    // 9. Echoes of the Moon
-      [0, 1.8, -16]     // 10. Orbiting You (Near bridge gateway)
-    ];
-
     SONGS_DATA.forEach((song, idx) => {
-      const pos = positions[idx];
+      const pos = COLLECTIBLE_POSITIONS[idx];
       collectiblesData.push({
         id: song.id,
         song,
@@ -498,395 +632,519 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       albumGroup.name = `collectible_${song.id}`;
       albumGroup.position.set(pos[0], pos[1], pos[2]);
 
-      // Album mesh box
-      const albumTex = TextureGenerator.createAlbumTexture(song);
-      const albumGeo = new THREE.BoxGeometry(1.6, 1.6, 0.08);
-      const albumMat = new THREE.MeshStandardMaterial({
-        map: albumTex,
-        roughness: 0.3,
-        metalness: 0.2,
-      });
-      const albumMesh = new THREE.Mesh(albumGeo, albumMat);
-      albumMesh.castShadow = true;
+      const albumTex = TextureGenerator.createAlbumTexture(song, maxAniso);
+      const albumMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(1.65, 1.65, 0.08),
+        new THREE.MeshStandardMaterial({ map: albumTex, roughness: 0.28, metalness: 0.2 })
+      );
+      albumMesh.castShadow = !isSoftwareGl;
       albumGroup.add(albumMesh);
 
-      // Glowing colored aura halo
-      const glowGeo = new THREE.PlaneGeometry(2.4, 2.4);
-      const glowMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(song.color),
-        transparent: true,
-        opacity: 0.4,
-        side: THREE.DoubleSide,
-      });
-      const glowMesh = new THREE.Mesh(glowGeo, glowMat);
+      const glowMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(2.4, 2.4),
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color(song.color),
+          transparent: true,
+          opacity: 0.36,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        })
+      );
       glowMesh.position.z = -0.05;
       albumGroup.add(glowMesh);
 
-      // Light Beam rising from album cover
-      const beamGeo = new THREE.CylinderGeometry(0.12, 0.65, 9, 16, 1, true);
-      const beamMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(song.color),
-        transparent: true,
-        opacity: 0.22,
-        side: THREE.DoubleSide,
-      });
-      const beamMesh = new THREE.Mesh(beamGeo, beamMat);
+      const beamMesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.12, 0.65, 9, 16, 1, true),
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color(song.color),
+          transparent: true,
+          opacity: 0.2,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        })
+      );
       beamMesh.position.y = 4.5;
       albumGroup.add(beamMesh);
 
-      // Ground glow light
-      const pLight = new THREE.PointLight(song.color, 1.4, 7);
+      const pLight = new THREE.PointLight(song.color, 1.35, 7);
       pLight.position.y = -0.5;
       albumGroup.add(pLight);
 
       collectiblesGroup.add(albumGroup);
     });
-
-    collectiblesDataRef.current = collectiblesData;
     scene.add(collectiblesGroup);
 
-    // 14. Orbit Ring Group (For completion sequence)
+    // 15. Orbit Ring (7 albums) & Rising Stone Bridge
     const orbitRingGroup = new THREE.Group();
-    orbitRingGroupRef.current = orbitRingGroup;
     scene.add(orbitRingGroup);
 
-    // 15. Floating Stone Bridge Group (Rises upon completing Level 1)
     const bridgeGroup = new THREE.Group();
-    bridgeGroupRef.current = bridgeGroup;
-
     for (let i = 0; i < 8; i++) {
-      const stoneGeo = new THREE.BoxGeometry(3.6, 0.8, 3.2);
-      const stoneMat = new THREE.MeshStandardMaterial({
-        color: 0x4a4e69,
-        emissive: 0x22223b,
-        emissiveIntensity: 0.25,
-        roughness: 0.75,
-        flatShading: true,
-      });
-      const stoneMesh = new THREE.Mesh(stoneGeo, stoneMat);
-      stoneMesh.position.set(0, -18, -22 - i * 3.8); // Hidden initially deep in void
+      const stoneMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(3.6, 0.8, 3.2),
+        new THREE.MeshStandardMaterial({
+          color: 0x4a4e69,
+          emissive: 0x22223b,
+          emissiveIntensity: 0.25,
+          roughness: 0.75,
+          flatShading: true,
+        })
+      );
+      stoneMesh.position.set(0, -18, -22 - i * 3.8);
       stoneMesh.name = `bridge_stone_${i}`;
       bridgeGroup.add(stoneMesh);
     }
 
-    // Distant second asteroid preview
-    const nextAsteroidGeo = new THREE.DodecahedronGeometry(8.5, 2);
-    const nextAsteroidMat = new THREE.MeshStandardMaterial({
-      color: 0x5c677d,
-      emissive: 0x3d5a80,
-      emissiveIntensity: 0.35,
-      roughness: 0.7,
-      flatShading: true,
-    });
-    const nextAsteroidMesh = new THREE.Mesh(nextAsteroidGeo, nextAsteroidMat);
+    const nextAsteroidMesh = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(8.5, 2),
+      new THREE.MeshStandardMaterial({
+        color: 0x5c677d,
+        emissive: 0x3d5a80,
+        emissiveIntensity: 0.35,
+        roughness: 0.7,
+        flatShading: true,
+      })
+    );
     nextAsteroidMesh.position.set(0, -2, -60);
     bridgeGroup.add(nextAsteroidMesh);
-
     scene.add(bridgeGroup);
 
-    // 16. Click/Tap on Island terrain to move player
-    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+    // 16. Baseline Snapshot & ExperienceSceneController Setup
+    const baseline: SceneBaselineState = {
+      fogColor: fog.color.clone(),
+      fogDensity: fog.density,
+      ambientColor: ambientLight.color.clone(),
+      ambientIntensity: ambientLight.intensity,
+      hemiSkyColor: hemiLight.color.clone(),
+      hemiGroundColor: hemiLight.groundColor.clone(),
+      hemiIntensity: hemiLight.intensity,
+      sunColor: sunLight.color.clone(),
+      sunIntensity: sunLight.intensity,
+      sunPosition: sunLight.position.clone(),
+      cyanLightColor: cyanPointLight.color.clone(),
+      cyanLightIntensity: cyanPointLight.intensity,
+      pinkLightColor: pinkPointLight.color.clone(),
+      pinkLightIntensity: pinkPointLight.intensity,
+      islandColor: islandMat.color.clone(),
+      islandEmissive: islandMat.emissive.clone(),
+      islandEmissiveIntensity: islandMat.emissiveIntensity,
+      islandRoughness: islandMat.roughness,
+      pathColor: pathMat.color.clone(),
+      pathEmissive: pathMat.emissive.clone(),
+      pathOpacity: pathMat.opacity,
+      skyColor: new THREE.Color(0x150a33),
+      exposure: renderer.toneMappingExposure,
+    };
+
+    let customRenderPass: (() => void) | null = null;
+    const experienceController = new ExperienceSceneController();
+
+    // 16b. Adaptive GPU Bloom Post-Processing Pipeline
+    let mainComposer: EffectComposer | null = null;
+    let bloomPass: UnrealBloomPass | null = null;
+    let bloomActive = !isSoftwareGl && initialPreset.enableBloom;
+
+    if (!isSoftwareGl) {
+      mainComposer = new EffectComposer(renderer);
+      mainComposer.setPixelRatio(Math.min(window.devicePixelRatio, initialPreset.maxPixelRatio));
+      mainComposer.setSize(window.innerWidth, window.innerHeight);
+      mainComposer.addPass(new RenderPass(scene, camera));
+      bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(window.innerWidth, window.innerHeight),
+        0.32,
+        0.55,
+        0.8
+      );
+      bloomPass.enabled = bloomActive;
+      mainComposer.addPass(bloomPass);
+      mainComposer.addPass(new OutputPass());
+    }
+
+    const unsubscribeQuality = qualitySettings.subscribe((preset) => {
+      const targetPr = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, preset.maxPixelRatio);
+      renderer.setPixelRatio(targetPr);
+      renderer.shadowMap.enabled = !isSoftwareGl && preset.enableShadows;
+      sunLight.castShadow = !isSoftwareGl && preset.enableShadows;
+      celestialSystem.applyQualityPreset(preset, isSoftwareGl);
+      bloomActive = !isSoftwareGl && preset.enableBloom;
+      if (mainComposer && bloomPass) {
+        mainComposer.setPixelRatio(targetPr);
+        bloomPass.enabled = bloomActive;
+      }
+    });
+
+    const handles: ExperienceSceneHandles = {
+      scene,
+      camera,
+      renderer,
+      isSoftwareGl,
+      fog,
+      ambientLight,
+      hemiLight,
+      sunLight,
+      cyanLight: cyanPointLight,
+      pinkLight: pinkPointLight,
+      islandMesh,
+      pathMesh,
+      skyMesh,
+      crystalInstanced,
+      rockInstanced,
+      stardustPoints,
+      celestialSystem,
+      playerGroup,
+      playerPosRef,
+      baseline,
+      setPostProcessPass: (fn) => {
+        customRenderPass = fn;
+      },
+      onNearbyMemoryChange: (mem) => songExperienceManager.setNearbyMemory(mem),
+      onSelectMemory: (mem) => songExperienceManager.setSelectedMemory(mem),
+    };
+
+    if (!isSoftwareGl) {
+      renderer.compile(scene, camera);
+    }
+
+    // 17. Pointer & Keyboard Interaction
+    const handlePointerClick = (event: MouseEvent) => {
       if (gameStageRef.current !== 'LEVEL1_GAMEPLAY') return;
 
-      const clientX = 'touches' in event ? event.touches[0].clientX : event.clientX;
-      const clientY = 'touches' in event ? event.touches[0].clientY : event.clientY;
+      _mouseVec.x = (event.clientX / window.innerWidth) * 2 - 1;
+      _mouseVec.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      _raycaster.setFromCamera(_mouseVec, camera);
 
-      tempMouseVec.x = (clientX / window.innerWidth) * 2 - 1;
-      tempMouseVec.y = -(clientY / window.innerHeight) * 2 + 1;
+      // Give active 3D experience first click priority (e.g. clicking memory frames)
+      if (experienceController.handlePointerClick(_raycaster, handles)) {
+        return;
+      }
 
-      if (!cameraRef.current) return;
-      tempRaycaster.setFromCamera(tempMouseVec, cameraRef.current);
-      const intersects = tempRaycaster.intersectObject(islandMesh);
+      // If inspecting a close-up memory frame, ignore ground walk clicks
+      if (activeExperienceRef.current.selectedMemory) {
+        return;
+      }
 
+      const intersects = _raycaster.intersectObject(islandMesh);
       if (intersects.length > 0) {
-        const point = intersects[0].point;
-        playerTargetPosRef.current = new THREE.Vector3(point.x, 0.8, point.z);
+        const pt = intersects[0].point;
+        playerTargetPos = new THREE.Vector3(pt.x, 0.8, pt.z);
+      }
+    };
+
+    const handleExperienceKeyDown = (e: KeyboardEvent) => {
+      if (gameStageRef.current !== 'LEVEL1_GAMEPLAY') return;
+      if (e.key.toLowerCase() === 'e') {
+        experienceController.handleInteract(handles);
+      } else if (e.key === 'Escape' && activeExperienceRef.current.selectedMemory) {
+        songExperienceManager.setSelectedMemory(null);
       }
     };
 
     const domEl = renderer.domElement;
-    domEl.addEventListener('click', handlePointerDown);
+    domEl.addEventListener('click', handlePointerClick);
+    window.addEventListener('keydown', handleExperienceKeyDown);
 
-    // 17. Resize Listener
     const handleResize = () => {
-      if (!cameraRef.current || !rendererRef.current) return;
-      cameraRef.current.aspect = window.innerWidth / window.innerHeight;
-      cameraRef.current.updateProjectionMatrix();
-      rendererRef.current.setSize(window.innerWidth, window.innerHeight);
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+      if (mainComposer) {
+        mainComposer.setSize(w, h);
+      }
     };
     window.addEventListener('resize', handleResize);
 
-    // 18. MAIN ANIMATION LOOP (60 FPS)
-    let animationFrameId: number;
-    let clock = new THREE.Clock();
+    // 18. Main Loop State
+    let frameId = 0;
+    const clock = new THREE.Clock();
+    let transitionProgress = 0;
+    let bridgeProgress = 0;
+    let completionTriggered = false;
+    let lastCollectedLen = collectedIdsRef.current.length;
 
-    const animate = () => {
-      animationFrameId = requestAnimationFrame(animate);
-      const delta = Math.min(0.1, clock.getDelta()); // Cap max delta to prevent spikes
+    const resetLevelObjects = () => {
+      completionTriggered = false;
+      bridgeProgress = 0;
+      playerPosRef.current.set(0, 0.8, 0);
+      playerVel.set(0, 0, 0);
+      playerTargetPos = null;
+      playerAngle = 0;
+      playerGroup.position.copy(playerPosRef.current);
+
+      for (let i = 0; i < 8; i++) {
+        const stone = bridgeGroup.getObjectByName(`bridge_stone_${i}`);
+        if (stone) stone.position.y = -18;
+      }
+
+      while (orbitRingGroup.children.length > 0) {
+        const child = orbitRingGroup.children[0];
+        orbitRingGroup.remove(child);
+        disposeObject3DTree(child);
+      }
+
+      collectiblesData.forEach((item) => {
+        item.isCollected = false;
+        const g = collectiblesGroup.getObjectByName(`collectible_${item.id}`);
+        if (g) {
+          g.visible = true;
+          g.scale.setScalar(1);
+          g.position.set(item.position[0], item.position[1], item.position[2]);
+        }
+      });
+    };
+
+    function afterDraw(cb: () => void) {
+      const gl = renderer.getContext() as WebGL2RenderingContext;
+      const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      gl.flush();
+      const poll = () => {
+        if (isDisposed) {
+          if (sync) gl.deleteSync(sync);
+          return;
+        }
+        const state = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS);
+        if (state === gl.UNSIGNALED) {
+          frameId = window.setTimeout(poll, 5);
+        } else {
+          if (sync) gl.deleteSync(sync);
+          frameId = window.setTimeout(cb, 80);
+        }
+      };
+      frameId = window.setTimeout(poll, 5);
+    }
+
+    const tick = () => {
+      if (isDisposed) return;
+
+      const delta = Math.min(0.1, clock.getDelta());
       const elapsed = clock.getElapsedTime();
-
-      // Sky background subtle cosmic rotation
-      skyMesh.rotation.y = elapsed * 0.008;
-      earthMesh.rotation.y = elapsed * 0.015;
-
-      // Update Instanced Floating Asteroid Rocks (High performance matrix loop)
-      if (rockInstancedMeshRef.current && rockTransformsRef.current.length > 0) {
-        const rocks = rockTransformsRef.current;
-        for (let i = 0; i < rocks.length; i++) {
-          const r = rocks[i];
-          const currentY = r.pos.y + Math.sin(elapsed * r.floatFreq + i) * 0.45;
-
-          tempDummyPos.set(r.pos.x, currentY, r.pos.z);
-          tempDummyRot.set(
-            elapsed * r.rotSpeed.x,
-            elapsed * r.rotSpeed.y,
-            elapsed * r.rotSpeed.z
-          );
-          tempDummyScale.setScalar(r.scale);
-
-          tempDummyMatrix.compose(
-            tempDummyPos,
-            tempDummyQuat.setFromEuler(tempDummyRot),
-            tempDummyScale
-          );
-          rockInstancedMeshRef.current.setMatrixAt(i, tempDummyMatrix);
-        }
-        rockInstancedMeshRef.current.instanceMatrix.needsUpdate = true;
-      }
-
-      // Update Floating Stardust Particles
-      if (stardustPointsRef.current && stardustInitialYRef.current && stardustSpeedsRef.current) {
-        const posAttrArr = stardustPointsRef.current.geometry.attributes.position.array as Float32Array;
-        const initialYArr = stardustInitialYRef.current;
-        const speedArr = stardustSpeedsRef.current;
-
-        for (let i = 0; i < particleCount; i++) {
-          posAttrArr[i * 3 + 1] = initialYArr[i] + Math.sin(elapsed * speedArr[i] + i) * 0.6;
-        }
-        stardustPointsRef.current.geometry.attributes.position.needsUpdate = true;
-      }
-
-      // Space Shuttle floating in space during intro
-      if (shuttleGroup) {
-        shuttleGroup.position.y = 8 + Math.sin(elapsed * 1.5) * 0.8;
-        shuttleGroup.rotation.z = Math.sin(elapsed * 0.8) * 0.08;
-      }
-
       const stage = gameStageRef.current;
+      const collected = collectedIdsRef.current;
+      const activeExp = activeExperienceRef.current;
 
-      // CAMERA FLOW & TRANSITIONS
+      // Detect replay reset (collectedIds went from >0 back to 0)
+      if (lastCollectedLen > 0 && collected.length === 0) {
+        resetLevelObjects();
+      }
+      lastCollectedLen = collected.length;
+
+      // Subtle background cosmic drift & reusable celestial environment update
+      skyMesh.rotation.y = elapsed * 0.004;
+      earthMesh.rotation.y = elapsed * 0.015;
+      moonMesh.rotation.y = elapsed * 0.008;
+      celestialSystem.update(delta, elapsed);
+
+      // Update Instanced Floating Rocks
+      for (let i = 0; i < rockTransforms.length; i++) {
+        const r = rockTransforms[i];
+        const currentY = r.pos.y + Math.sin(elapsed * r.floatFreq + i) * 0.45;
+        _dummyPos.set(r.pos.x, currentY, r.pos.z);
+        _dummyRot.set(elapsed * r.rotSpeed.x, elapsed * r.rotSpeed.y, elapsed * r.rotSpeed.z);
+        _dummyScale.setScalar(r.scale);
+        _dummyMat.compose(_dummyPos, _dummyQuat.setFromEuler(_dummyRot), _dummyScale);
+        rockInstanced.setMatrixAt(i, _dummyMat);
+      }
+      rockInstanced.instanceMatrix.needsUpdate = true;
+
+      // Update Stardust Particles
+      const posArr = stardustPoints.geometry.attributes.position.array as Float32Array;
+      for (let i = 0; i < particleCount; i++) {
+        posArr[i * 3 + 1] = stardustInitialY[i] + Math.sin(elapsed * stardustSpeeds[i] + i) * 0.6;
+      }
+      stardustPoints.geometry.attributes.position.needsUpdate = true;
+
+      // Shuttle hover during intro
+      shuttleGroup.position.y = 8 + Math.sin(elapsed * 1.5) * 0.8;
+      shuttleGroup.rotation.z = Math.sin(elapsed * 0.8) * 0.08;
+
+      // Update Active 3D Song Experience
+      experienceController.update(delta, elapsed, activeExp, handles);
+
+      // Camera Choreography
+      const camOverride = experienceController.getCameraOverride(handles);
       if (stage === 'INTRO_NARRATION') {
-        // Wide space view camera gliding softly
-        camera.position.x = Math.sin(elapsed * 0.18) * 9;
-        camera.position.y = 15 + Math.cos(elapsed * 0.12) * 3;
-        camera.position.z = 45;
+        camera.position.set(
+          Math.sin(elapsed * 0.18) * 9,
+          15 + Math.cos(elapsed * 0.12) * 3,
+          45
+        );
         camera.lookAt(0, 5, 0);
       } else if (stage === 'TRANSITION_TO_LEVEL1') {
-        // Seamless transition from space shuttle to asteroid overview
-        transitionProgressRef.current = Math.min(1, transitionProgressRef.current + delta * 0.65);
-        const p = transitionProgressRef.current;
-        const ease = p * p * (3 - 2 * p); // Cubic smooth ease
-
-        if (shuttleGroup) {
-          shuttleGroup.position.z = THREE.MathUtils.lerp(12, -10, ease);
-          shuttleGroup.position.y = THREE.MathUtils.lerp(8, 2, ease);
-          shuttleGroup.scale.setScalar(THREE.MathUtils.lerp(1, 0.2, ease));
-        }
-
-        // Camera smoothly glides down into gameplay isometric view
-        camera.position.x = THREE.MathUtils.lerp(0, 14.14, ease);
-        camera.position.y = THREE.MathUtils.lerp(15, 14, ease);
-        camera.position.z = THREE.MathUtils.lerp(45, 14.14, ease);
+        transitionProgress = Math.min(1, transitionProgress + delta * 0.65);
+        const ease = transitionProgress * transitionProgress * (3 - 2 * transitionProgress);
+        shuttleGroup.position.z = THREE.MathUtils.lerp(12, -10, ease);
+        shuttleGroup.position.y = THREE.MathUtils.lerp(8, 2, ease);
+        shuttleGroup.scale.setScalar(THREE.MathUtils.lerp(1, 0.2, ease));
+        camera.position.set(
+          THREE.MathUtils.lerp(0, 14.14, ease),
+          THREE.MathUtils.lerp(15, 14, ease),
+          THREE.MathUtils.lerp(45, 14.14, ease)
+        );
         camera.lookAt(0, 0.8, 0);
-
-        if (p >= 0.99 && shuttleGroup) {
-          shuttleGroup.visible = false;
-        }
+        if (transitionProgress >= 0.99) shuttleGroup.visible = false;
       } else if (stage === 'LEVEL1_BRIEF' || stage === 'LEVEL1_GAMEPLAY') {
-        // SMOOTH ISOMETRIC CAMERA FOLLOW WITH DAMPING
-        // Pitch: 45°, Yaw: 45°, Height: 14 units, Distance: 20 units
-        const pPos = playerPosRef.current;
-        tempCamDesiredPos.set(pPos.x + 14.14, pPos.y + 14, pPos.z + 14.14);
-        tempCamLookTarget.set(pPos.x, pPos.y + 0.8, pPos.z);
-
-        // Exponential Damping Factor for zero jitter
-        const dampFactor = 1 - Math.exp(-10 * delta);
-        camera.position.lerp(tempCamDesiredPos, dampFactor);
-        tempCamCurrentLook.lerp(tempCamLookTarget, dampFactor);
-        camera.lookAt(tempCamCurrentLook);
+        if (camOverride) {
+          const dampFactor = 1 - Math.exp(-6.5 * delta);
+          camera.position.lerp(camOverride.position, dampFactor);
+          _camCurrentLook.lerp(camOverride.lookAt, dampFactor);
+          camera.lookAt(_camCurrentLook);
+        } else {
+          const pPos = playerPosRef.current;
+          _camDesiredPos.set(pPos.x + 14.14, pPos.y + 14, pPos.z + 14.14);
+          _camLookTarget.set(pPos.x, pPos.y + 0.8, pPos.z);
+          const dampFactor = 1 - Math.exp(-10 * delta);
+          camera.position.lerp(_camDesiredPos, dampFactor);
+          _camCurrentLook.lerp(_camLookTarget, dampFactor);
+          camera.lookAt(_camCurrentLook);
+        }
       } else if (stage === 'LEVEL1_COMPLETION' || stage === 'LEVEL1_FINISHED') {
-        // Zoom out smoothly for grand cinematic bridge overview
         const pPos = playerPosRef.current;
-        tempCamDesiredPos.set(pPos.x * 0.5 + 18, 22, pPos.z + 24);
-        tempCamLookTarget.set(0, 0, -12);
-
+        _camDesiredPos.set(pPos.x * 0.5 + 18, 22, pPos.z + 24);
+        _camLookTarget.set(0, 0, -12);
         const dampFactor = 1 - Math.exp(-5 * delta);
-        camera.position.lerp(tempCamDesiredPos, dampFactor);
-        tempCamCurrentLook.lerp(tempCamLookTarget, dampFactor);
-        camera.lookAt(tempCamCurrentLook);
+        camera.position.lerp(_camDesiredPos, dampFactor);
+        _camCurrentLook.lerp(_camLookTarget, dampFactor);
+        camera.lookAt(_camCurrentLook);
       }
 
-      // SMOOTH PLAYER MOVEMENT CONTROLLER (LEVEL 1 GAMEPLAY)
-      if (stage === 'LEVEL1_GAMEPLAY' && playerMeshRef.current) {
+      // Player Movement (preserved during all 7 experiences unless inspecting memory close-up)
+      if (stage === 'LEVEL1_GAMEPLAY' && !activeExp.selectedMemory) {
+        const ctrls = playerControlsRef.current;
         let inputX = 0;
         let inputZ = 0;
-
-        // Keyboard & D-Pad Inputs
-        if (playerControls.forward) inputZ -= 1;
-        if (playerControls.backward) inputZ += 1;
-        if (playerControls.left) inputX -= 1;
-        if (playerControls.right) inputX += 1;
-
-        if (playerControls.joystickVector.x !== 0 || playerControls.joystickVector.y !== 0) {
-          inputX = playerControls.joystickVector.x;
-          inputZ = playerControls.joystickVector.y;
-          playerTargetPosRef.current = null;
+        if (ctrls.forward) inputZ -= 1;
+        if (ctrls.backward) inputZ += 1;
+        if (ctrls.left) inputX -= 1;
+        if (ctrls.right) inputX += 1;
+        if (ctrls.joystickVector.x !== 0 || ctrls.joystickVector.y !== 0) {
+          inputX = ctrls.joystickVector.x;
+          inputZ = ctrls.joystickVector.y;
+          playerTargetPos = null;
         }
 
         const maxSpeed = 9.2;
-
         if (inputX !== 0 || inputZ !== 0) {
-          playerTargetPosRef.current = null; // Keyboard cancels click destination
-          const inputLen = Math.hypot(inputX, inputZ);
-          const normX = inputX / inputLen;
-          const normZ = inputZ / inputLen;
-
-          // Target velocity
-          const targetVelX = normX * maxSpeed;
-          const targetVelZ = normZ * maxSpeed;
-
-          // Smooth acceleration
-          playerVelRef.current.x = THREE.MathUtils.lerp(playerVelRef.current.x, targetVelX, delta * 14);
-          playerVelRef.current.z = THREE.MathUtils.lerp(playerVelRef.current.z, targetVelZ, delta * 14);
-        } else if (playerTargetPosRef.current) {
-          // Click-to-move destination physics
-          const distToTarget = playerPosRef.current.distanceTo(playerTargetPosRef.current);
+          playerTargetPos = null;
+          const len = Math.hypot(inputX, inputZ);
+          playerVel.x = THREE.MathUtils.lerp(playerVel.x, (inputX / len) * maxSpeed, delta * 14);
+          playerVel.z = THREE.MathUtils.lerp(playerVel.z, (inputZ / len) * maxSpeed, delta * 14);
+        } else if (playerTargetPos) {
+          const distToTarget = playerPosRef.current.distanceTo(playerTargetPos);
           if (distToTarget > 0.35) {
-            const dirX = (playerTargetPosRef.current.x - playerPosRef.current.x) / distToTarget;
-            const dirZ = (playerTargetPosRef.current.z - playerPosRef.current.z) / distToTarget;
-
-            playerVelRef.current.x = THREE.MathUtils.lerp(playerVelRef.current.x, dirX * maxSpeed, delta * 14);
-            playerVelRef.current.z = THREE.MathUtils.lerp(playerVelRef.current.z, dirZ * maxSpeed, delta * 14);
+            const dx = (playerTargetPos.x - playerPosRef.current.x) / distToTarget;
+            const dz = (playerTargetPos.z - playerPosRef.current.z) / distToTarget;
+            playerVel.x = THREE.MathUtils.lerp(playerVel.x, dx * maxSpeed, delta * 14);
+            playerVel.z = THREE.MathUtils.lerp(playerVel.z, dz * maxSpeed, delta * 14);
           } else {
-            playerTargetPosRef.current = null;
-            playerVelRef.current.x = THREE.MathUtils.lerp(playerVelRef.current.x, 0, delta * 12);
-            playerVelRef.current.z = THREE.MathUtils.lerp(playerVelRef.current.z, 0, delta * 12);
+            playerTargetPos = null;
+            playerVel.x = THREE.MathUtils.lerp(playerVel.x, 0, delta * 12);
+            playerVel.z = THREE.MathUtils.lerp(playerVel.z, 0, delta * 12);
           }
         } else {
-          // Smooth deceleration / floating friction dampening
-          playerVelRef.current.x = THREE.MathUtils.lerp(playerVelRef.current.x, 0, delta * 12);
-          playerVelRef.current.z = THREE.MathUtils.lerp(playerVelRef.current.z, 0, delta * 12);
+          playerVel.x = THREE.MathUtils.lerp(playerVel.x, 0, delta * 12);
+          playerVel.z = THREE.MathUtils.lerp(playerVel.z, 0, delta * 12);
         }
 
-        // Apply velocity to position
-        playerPosRef.current.x += playerVelRef.current.x * delta;
-        playerPosRef.current.z += playerVelRef.current.z * delta;
+        playerPosRef.current.x += playerVel.x * delta;
+        playerPosRef.current.z += playerVel.z * delta;
 
-        // Smoothly update facing rotation angle
-        const currentSpeed = playerVelRef.current.length();
-        if (currentSpeed > 0.2) {
-          const targetAngle = Math.atan2(playerVelRef.current.x, playerVelRef.current.z);
-          // Angle interpolation
-          let diff = targetAngle - playerAngleRef.current;
+        const speed = playerVel.length();
+        if (speed > 0.2) {
+          const targetAngle = Math.atan2(playerVel.x, playerVel.z);
+          let diff = targetAngle - playerAngle;
           while (diff < -Math.PI) diff += Math.PI * 2;
           while (diff > Math.PI) diff -= Math.PI * 2;
-          playerAngleRef.current += diff * Math.min(1, delta * 14);
+          playerAngle += diff * Math.min(1, delta * 14);
         }
 
-        // Soft terrain boundary clamping (Outer radius ~17.8 units)
         const distFromCenter = Math.hypot(playerPosRef.current.x, playerPosRef.current.z);
         if (distFromCenter > 17.8) {
           const boundAngle = Math.atan2(playerPosRef.current.z, playerPosRef.current.x);
           playerPosRef.current.x = Math.cos(boundAngle) * 17.8;
           playerPosRef.current.z = Math.sin(boundAngle) * 17.8;
-          playerVelRef.current.multiplyScalar(0.5); // Soft bounce damping
+          playerVel.multiplyScalar(0.5);
         }
 
-        // Floaty walking bounce
-        if (currentSpeed > 0.4) {
-          playerPosRef.current.y = 0.8 + Math.abs(Math.sin(elapsed * 11)) * 0.16;
-        } else {
-          playerPosRef.current.y = 0.8 + Math.sin(elapsed * 2.5) * 0.04; // Idle breathing
-        }
+        playerPosRef.current.y =
+          speed > 0.4
+            ? 0.8 + Math.abs(Math.sin(elapsed * 11)) * 0.16
+            : 0.8 + Math.sin(elapsed * 2.5) * 0.04;
 
-        playerMeshRef.current.position.copy(playerPosRef.current);
-        playerMeshRef.current.rotation.y = playerAngleRef.current;
+        playerGroup.position.copy(playerPosRef.current);
+        playerGroup.rotation.y = playerAngle;
       }
 
-      // COLLECTIBLES ANIMATION & PROXIMITY COLLECTION
-      collectiblesDataRef.current.forEach((item) => {
+      // Album Collectibles (locked while an experience is active)
+      const canCollect = songExperienceManager.canCollectAlbum();
+      for (let i = 0; i < collectiblesData.length; i++) {
+        const item = collectiblesData[i];
         const albumGroup = collectiblesGroup.getObjectByName(`collectible_${item.id}`);
-        if (!albumGroup) return;
+        if (!albumGroup) continue;
 
-        if (collectedIdsRef.current.includes(item.id)) {
+        if (collected.includes(item.id)) {
           albumGroup.visible = false;
           item.isCollected = true;
-          return;
+          continue;
         }
 
-        // Gentle sinusoidal floating and rotation
+        // Dim uncollected albums slightly while another song experience is active
         albumGroup.position.y = item.position[1] + Math.sin(elapsed * 2.5 + item.id) * 0.35;
         albumGroup.rotation.y = elapsed * 0.6 + item.id;
 
-        // Proximity check with player astronaut
-        if (stage === 'LEVEL1_GAMEPLAY') {
+        if (stage === 'LEVEL1_GAMEPLAY' && canCollect) {
           const pPos = playerPosRef.current;
-          const dx = pPos.x - item.position[0];
-          const dz = pPos.z - item.position[2];
-          const distToPlayer = Math.hypot(dx, dz);
+          const distToPlayer = Math.hypot(pPos.x - item.position[0], pPos.z - item.position[2]);
 
-          if (distToPlayer < 3.8) {
-            // Album floats towards player backpack container
+          if (distToPlayer < 3.6) {
             albumGroup.position.x = THREE.MathUtils.lerp(albumGroup.position.x, pPos.x, delta * 5);
             albumGroup.position.y = THREE.MathUtils.lerp(albumGroup.position.y, pPos.y + 0.8, delta * 5);
             albumGroup.position.z = THREE.MathUtils.lerp(albumGroup.position.z, pPos.z, delta * 5);
             albumGroup.scale.multiplyScalar(0.91);
 
-            if (distToPlayer < 1.2 || albumGroup.scale.x < 0.15) {
-              // Collected!
+            if (distToPlayer < 1.2 || albumGroup.scale.x < 0.16) {
               audioEngine.playCollectChime();
-              audioEngine.playSongPreview(item.song);
-              onCollectSong(item.song);
               item.isCollected = true;
               albumGroup.visible = false;
+              onCollectSongRef.current(item.song);
             }
           }
         }
-      });
-
-      // CONTAINER GLOW ANIMATION
-      if (playerContainerGlowRef.current) {
-        const count = collectedIdsRef.current.length;
-        const mat = playerContainerGlowRef.current.material as THREE.MeshStandardMaterial;
-        mat.emissiveIntensity = 0.5 + (count / 10) * 2.2 + Math.sin(elapsed * 4) * 0.3;
       }
 
-      // LEVEL 1 COMPLETION SEQUENCE (WHEN ALL 10 COLLECTED)
-      if (collectedIdsRef.current.length === 10 && (stage === 'LEVEL1_GAMEPLAY' || stage === 'LEVEL1_COMPLETION')) {
-        if (!completionTriggeredRef.current) {
-          completionTriggeredRef.current = true;
+      // Backpack core glow scales with 7 collected songs
+      containerCoreMat.emissiveIntensity =
+        0.5 + (collected.length / TOTAL_SONGS_COUNT) * 2.2 + Math.sin(elapsed * 4) * 0.25;
+
+      // Level 1 Completion Sequence (once all 7 are collected AND no song experience is currently playing)
+      const noActiveExp = activeExp.status === 'idle' || activeExp.song === null;
+      if (
+        collected.length === TOTAL_SONGS_COUNT &&
+        noActiveExp &&
+        (stage === 'LEVEL1_GAMEPLAY' || stage === 'LEVEL1_COMPLETION')
+      ) {
+        if (!completionTriggered) {
+          completionTriggered = true;
           audioEngine.playBridgeRisingSound();
 
-          // Spawn orbiting halo ring of 10 album covers around astronaut
           SONGS_DATA.forEach((song) => {
-            const orbitAlbumTex = TextureGenerator.createAlbumTexture(song);
-            const orbitGeo = new THREE.BoxGeometry(1.2, 1.2, 0.05);
-            const orbitMat = new THREE.MeshStandardMaterial({ map: orbitAlbumTex });
-            const orbitMesh = new THREE.Mesh(orbitGeo, orbitMat);
+            const orbitTex = TextureGenerator.createAlbumTexture(song, maxAniso);
+            const orbitMesh = new THREE.Mesh(
+              new THREE.BoxGeometry(1.2, 1.2, 0.05),
+              new THREE.MeshStandardMaterial({ map: orbitTex })
+            );
             orbitMesh.name = `orbit_album_${song.id}`;
             orbitRingGroup.add(orbitMesh);
           });
         }
 
-        // Orbit ring rotation around player
         const pPos = playerPosRef.current;
-        orbitRingGroup.position.copy(pPos);
-        orbitRingGroup.position.y = 2.2;
+        orbitRingGroup.position.set(pPos.x, 2.2, pPos.z);
 
         SONGS_DATA.forEach((song, idx) => {
           const orbitMesh = orbitRingGroup.getObjectByName(`orbit_album_${song.id}`);
           if (orbitMesh) {
-            const angle = (idx / 10) * Math.PI * 2 + elapsed * 0.65;
+            const angle = (idx / TOTAL_SONGS_COUNT) * Math.PI * 2 + elapsed * 0.65;
             const radius = 4.2;
             orbitMesh.position.set(
               Math.cos(angle) * radius,
@@ -897,37 +1155,54 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           }
         });
 
-        // Floating Stone Bridge smoothly rises step-by-step from void
-        bridgeProgressRef.current = Math.min(1, bridgeProgressRef.current + delta * 0.28);
-        const bp = bridgeProgressRef.current;
-
+        bridgeProgress = Math.min(1, bridgeProgress + delta * 0.28);
         for (let i = 0; i < 8; i++) {
           const stone = bridgeGroup.getObjectByName(`bridge_stone_${i}`);
           if (stone) {
             const stoneDelay = i * 0.1;
-            const stoneP = Math.max(0, Math.min(1, (bp - stoneDelay) * 3));
+            const stoneP = Math.max(0, Math.min(1, (bridgeProgress - stoneDelay) * 3));
             stone.position.y = THREE.MathUtils.lerp(-18, -0.4, stoneP);
           }
         }
 
-        if (bp >= 0.95 && stage === 'LEVEL1_GAMEPLAY') {
-          onAllCollectedSequenceDone();
+        if (bridgeProgress >= 0.95 && stage === 'LEVEL1_GAMEPLAY') {
+          onAllCollectedRef.current();
         }
       }
 
-      // Render Three.js frame
-      renderer.render(scene, camera);
+      // Render Frame (ASCII shader pass takes priority; otherwise adaptive bloom composer on GPU)
+      if (customRenderPass) {
+        customRenderPass();
+      } else if (mainComposer && bloomActive) {
+        mainComposer.render();
+      } else {
+        renderer.render(scene, camera);
+      }
+
+      if (isSoftwareGl) afterDraw(tick);
+      else frameId = requestAnimationFrame(tick);
     };
 
-    animate();
+    tick();
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
-      domEl.removeEventListener('click', handlePointerDown);
+      isDisposed = true;
+      cancelAnimationFrame(frameId);
+      clearTimeout(frameId);
+      unsubscribeQuality();
+      domEl.removeEventListener('click', handlePointerClick);
+      domEl.removeEventListener('webglcontextlost', handleContextLost);
+      domEl.removeEventListener('webglcontextrestored', handleContextRestored);
+      window.removeEventListener('keydown', handleExperienceKeyDown);
       window.removeEventListener('resize', handleResize);
-      if (rendererRef.current && rendererRef.current.domElement) {
-        rendererRef.current.dispose();
+      experienceController.dispose(handles);
+      celestialSystem.dispose();
+      if (mainComposer) {
+        mainComposer.dispose();
       }
+      disposeObject3DTree(scene);
+      envTex.dispose();
+      renderer.dispose();
     };
   }, []);
 

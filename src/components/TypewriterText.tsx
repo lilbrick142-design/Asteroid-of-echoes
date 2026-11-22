@@ -94,7 +94,7 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({
     >
       <p className="min-h-[3rem] font-sans text-lg md:text-xl text-slate-100 leading-relaxed font-normal tracking-wide drop-shadow-md">
         {displayedText}
-        {!isLineFinished && <span className="inline-block w-2 h-5 ml-1 bg-cyan-400 animate-pulse" />}
+        {!isLineFinished && <span className="inline-block w-1.5 h-5 ml-1 bg-cyan-400 align-middle" />}
       </p>
       <div className="mt-2 text-xs text-slate-400 opacity-60 flex items-center justify-end space-x-1">
         <span>Line {currentLineIdx + 1} of {lines.length}</span>

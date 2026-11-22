@@ -1,117 +1,164 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { SongItem } from '../types';
-import { SONGS_DATA } from '../data/songs';
-import { Sparkles, Music, Play, RotateCcw, Compass, Award, ArrowRight, Disc } from 'lucide-react';
+import { SONGS_DATA, TOTAL_SONGS_COUNT } from '../data/songs';
+import {
+  Sparkles,
+  Music,
+  Play,
+  Square,
+  RotateCcw,
+  Compass,
+  Award,
+  ArrowRight,
+  Disc,
+} from 'lucide-react';
 import { audioEngine } from '../services/audioEngine';
 
 interface VictoryScreenProps {
   onReplayLevel1: () => void;
+  onLaunchExperienceFromSummary: (song: SongItem) => void;
 }
 
-export const VictoryScreen: React.FC<VictoryScreenProps> = ({ onReplayLevel1 }) => {
+export const VictoryScreen: React.FC<VictoryScreenProps> = ({
+  onReplayLevel1,
+  onLaunchExperienceFromSummary,
+}) => {
   const [selectedSong, setSelectedSong] = useState<SongItem>(SONGS_DATA[0]);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [playingSongId, setPlayingSongId] = useState<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      audioEngine.stopExperienceAudio(0.15);
+    };
+  }, []);
 
   const handlePlaySong = (song: SongItem) => {
     setSelectedSong(song);
-    audioEngine.playSongPreview(song, () => setIsPlaying(false));
-    setIsPlaying(true);
+    setPlayingSongId(song.id);
+    audioEngine.playSongPreview(song, () => setPlayingSongId(null));
   };
 
+  const handleStopSong = () => {
+    audioEngine.stopExperienceAudio(0.25);
+    setPlayingSongId(null);
+  };
+
+  const isSelectedPlaying = playingSongId === selectedSong.id;
+
   return (
-    <div className="absolute inset-0 z-30 bg-slate-950/95 backdrop-blur-xl overflow-y-auto p-6 md:p-12 flex flex-col items-center justify-start animate-fade-in text-slate-100">
+    <div className="absolute inset-0 z-30 bg-slate-950/95 overflow-y-auto p-6 md:p-12 flex flex-col items-center justify-start animate-fade-in text-slate-100">
       <div className="max-w-4xl w-full my-auto space-y-8">
         {/* Header */}
         <div className="text-center space-y-3">
-          <div className="inline-flex items-center space-x-2 px-4 py-1.5 rounded-full bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 text-xs font-bold uppercase tracking-widest shadow-lg">
-            <Award className="w-4 h-4 text-yellow-400" />
-            <span>Mission Objective Complete • Level 1</span>
+          <div className="inline-flex items-center gap-2 text-cyan-300 text-xs font-medium tracking-wider">
+            <Award className="w-4 h-4 text-amber-300" />
+            <span>Mission Complete · Level 1</span>
           </div>
 
-          <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight bg-gradient-to-r from-cyan-300 via-indigo-200 to-fuchsia-300 bg-clip-text text-transparent">
+          <h1 className="font-display text-4xl md:text-5xl font-semibold tracking-tight text-slate-100">
             Asteroid of Echoes Recovered
           </h1>
 
-          <p className="text-slate-300 text-base max-w-xl mx-auto leading-relaxed">
-            All 10 drifting musical fragments have been safely cataloged inside Astronomer Vanshikha's collection container. The stone route to the Moon is opening.
+          <p className="text-slate-300 text-sm md:text-base max-w-xl mx-auto leading-relaxed">
+            All {TOTAL_SONGS_COUNT} drifting musical memories have been cataloged inside Astronomer Vanshikha's collection container. The stone route toward the Moon is open.
           </p>
         </div>
 
-        {/* Music Jukebox Deck */}
-        <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
+        {/* Music & 3D Memory Jukebox Deck */}
+        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-4">
           <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-            <div className="flex items-center space-x-2 text-cyan-400">
+            <div className="flex items-center gap-2 text-cyan-300">
               <Music className="w-5 h-5" />
-              <h3 className="font-bold text-slate-100">
-                Recovered Fragment Jukebox (10 / 10)
+              <h3 className="font-semibold text-slate-100 text-sm md:text-base">
+                Recovered Musical Worlds ({TOTAL_SONGS_COUNT} / {TOTAL_SONGS_COUNT})
               </h3>
             </div>
-            <span className="text-xs text-slate-400">Click any track to play 5–10s preview</span>
+            <span className="text-xs text-slate-400">Select any song to listen or revisit its 3D world</span>
           </div>
 
-          {/* Active Player Banner */}
           {selectedSong && (
-            <div className="bg-slate-950/80 border border-cyan-500/30 rounded-2xl p-4 flex flex-col md:flex-row items-center justify-between gap-4">
-              <div className="flex items-center space-x-4">
+            <div className="bg-slate-950/85 border border-slate-700/80 rounded-xl p-4 flex flex-col md:flex-row items-center justify-between gap-4">
+              <div className="flex items-center gap-4 min-w-0">
                 <div
-                  className="w-14 h-14 rounded-xl flex items-center justify-center text-white shadow-lg shrink-0 font-bold"
+                  className="w-12 h-12 rounded-lg flex items-center justify-center text-white shrink-0"
                   style={{ backgroundColor: selectedSong.color }}
                 >
-                  <Disc className="w-8 h-8 animate-spin-slow" />
+                  <Disc className="w-6 h-6" />
                 </div>
-                <div>
-                  <div className="text-[11px] uppercase font-bold tracking-wider text-cyan-400">
-                    {selectedSong.genre}
+                <div className="min-w-0">
+                  <div className="text-xs text-cyan-300 font-medium">
+                    {selectedSong.experienceTitle}
                   </div>
-                  <h4 className="text-lg font-bold text-slate-100">
+                  <h4 className="font-display text-xl font-semibold text-slate-100 truncate">
                     {selectedSong.title}
                   </h4>
-                  <p className="text-xs text-slate-300">
-                    {selectedSong.artist} ({selectedSong.year})
+                  <p className="text-xs text-slate-400 truncate">
+                    {selectedSong.artist} · {selectedSong.experienceSubtitle}
                   </p>
                 </div>
               </div>
 
-              <button
-                onClick={() => handlePlaySong(selectedSong)}
-                className="px-6 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-sm rounded-full flex items-center space-x-2 transition-all shadow-lg shadow-cyan-500/20"
-              >
-                <Play className="w-4 h-4 fill-current" />
-                <span>{isPlaying ? 'Replay Preview' : 'Play Preview'}</span>
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {isSelectedPlaying ? (
+                  <button
+                    onClick={handleStopSong}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 font-medium text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-current" />
+                    <span>Stop Audio</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handlePlaySong(selectedSong)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 font-medium text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>Listen</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={() => {
+                    handleStopSong();
+                    onLaunchExperienceFromSummary(selectedSong);
+                  }}
+                  className="px-4 py-2 bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-semibold text-xs rounded-lg flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Enter 3D World</span>
+                </button>
+              </div>
             </div>
           )}
 
-          {/* Song list grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 pt-2">
+          {/* 7-Song Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 pt-1">
             {SONGS_DATA.map((song) => {
               const isSelected = selectedSong?.id === song.id;
               return (
                 <button
                   key={song.id}
-                  onClick={() => handlePlaySong(song)}
-                  className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between h-28 ${
+                  onClick={() => setSelectedSong(song)}
+                  className={`p-3.5 rounded-xl border text-left transition-colors flex flex-col justify-between min-h-[6.5rem] ${
                     isSelected
-                      ? 'bg-slate-800 border-cyan-400 ring-2 ring-cyan-500/30'
-                      : 'bg-slate-950/50 border-slate-800 hover:border-slate-700 hover:bg-slate-800/50'
+                      ? 'bg-slate-800 border-cyan-400'
+                      : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 hover:bg-slate-800/50'
                   }`}
                 >
                   <div className="flex items-center justify-between w-full">
-                    <span className="text-[10px] font-bold text-cyan-400 uppercase">
-                      #{song.id}
+                    <span className="font-mono text-[11px] text-slate-400 tabular-nums">
+                      0{song.id}
                     </span>
                     <div
-                      className="w-3 h-3 rounded-full"
+                      className="w-2.5 h-2.5 rounded-full"
                       style={{ backgroundColor: song.color }}
                     />
                   </div>
-                  <div>
-                    <div className="text-xs font-bold text-slate-100 truncate">
+                  <div className="mt-2">
+                    <div className="text-xs font-semibold text-slate-100 truncate">
                       {song.title}
                     </div>
-                    <div className="text-[11px] text-slate-400 truncate">
-                      {song.artist}
-                    </div>
+                    <div className="text-[11px] text-slate-400 truncate">{song.artist}</div>
                   </div>
                 </button>
               );
@@ -119,47 +166,50 @@ export const VictoryScreen: React.FC<VictoryScreenProps> = ({ onReplayLevel1 }) 
           </div>
         </div>
 
-        {/* Teaser for Level 2 & Actions */}
+        {/* Next Phase & Replay Actions */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between">
+          <div className="bg-slate-900/75 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between">
             <div className="space-y-2">
-              <div className="flex items-center space-x-2 text-yellow-400 text-xs font-bold uppercase tracking-wider">
+              <div className="flex items-center gap-2 text-amber-300 text-xs font-medium">
                 <Compass className="w-4 h-4" />
                 <span>Next Station Phase</span>
               </div>
-              <h3 className="text-lg font-bold text-slate-100">
+              <h3 className="text-lg font-semibold text-slate-100">
                 Level 2: The Crystal Citadel
               </h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                The floating stone bridge leads into deep space toward the glowing lunar crystal core. Prepare for the next phase of the Moon Operation!
+                The floating stone bridge leads into deep space toward the lunar crystal core.
               </p>
             </div>
 
-            <div className="mt-4 flex items-center space-x-2 text-cyan-400 text-xs font-semibold">
+            <div className="mt-4 flex items-center gap-2 text-cyan-300 text-xs font-medium">
               <span>Bridge Route Established</span>
               <ArrowRight className="w-4 h-4" />
             </div>
           </div>
 
-          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between items-center text-center">
+          <div className="bg-slate-900/75 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between items-start">
             <div className="space-y-2">
-              <div className="flex items-center justify-center space-x-1 text-cyan-400 text-xs font-bold uppercase tracking-wider">
+              <div className="flex items-center gap-1.5 text-cyan-300 text-xs font-medium">
                 <Sparkles className="w-4 h-4" />
                 <span>Revisit Asteroid 1</span>
               </div>
-              <h3 className="text-lg font-bold text-slate-100">
+              <h3 className="text-lg font-semibold text-slate-100">
                 Explore Level 1 Again
               </h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Re-enter the peaceful, cozy Asteroid of Echoes and wander the starry surface freely.
+                Reset all seven album fragments on the asteroid surface and experience each musical world anew.
               </p>
             </div>
 
             <button
-              onClick={onReplayLevel1}
-              className="mt-4 px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 hover:border-cyan-500/50 font-bold text-xs rounded-full flex items-center space-x-2 transition-all"
+              onClick={() => {
+                handleStopSong();
+                onReplayLevel1();
+              }}
+              className="mt-4 px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 font-semibold text-xs rounded-lg flex items-center gap-2 transition-colors"
             >
-              <RotateCcw className="w-4 h-4 text-cyan-400" />
+              <RotateCcw className="w-4 h-4 text-cyan-300" />
               <span>Replay Level 1</span>
             </button>
           </div>

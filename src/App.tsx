@@ -1,18 +1,28 @@
 import { useState, useEffect } from 'react';
-import { GameStage, SongItem, PlayerControls } from './types';
+import {
+  ActiveExperienceState,
+  GameStage,
+  PlayerControls,
+  SongItem,
+} from './types';
+import { TOTAL_SONGS_COUNT } from './data/songs';
 import { GameCanvas } from './components/GameCanvas';
 import { IntroOverlay } from './components/IntroOverlay';
 import { LevelBriefOverlay } from './components/LevelBriefOverlay';
 import { HUD } from './components/HUD';
+import { ExperienceHUD } from './components/ExperienceHUD';
 import { AlbumJukeboxModal } from './components/AlbumJukeboxModal';
 import { CompletionOverlay } from './components/CompletionOverlay';
 import { VictoryScreen } from './components/VictoryScreen';
 import { audioEngine } from './services/audioEngine';
+import { songExperienceManager } from './services/SongExperienceManager';
 
 export default function App() {
   const [gameStage, setGameStage] = useState<GameStage>('INTRO_NARRATION');
   const [collectedIds, setCollectedIds] = useState<number[]>([]);
-  const [activePreviewSong, setActivePreviewSong] = useState<SongItem | null>(null);
+  const [activeExperience, setActiveExperience] = useState<ActiveExperienceState>(() =>
+    songExperienceManager.getState()
+  );
   const [isJukeboxOpen, setIsJukeboxOpen] = useState<boolean>(false);
 
   const [playerControls, setPlayerControls] = useState<PlayerControls>({
@@ -23,7 +33,14 @@ export default function App() {
     joystickVector: { x: 0, y: 0 },
   });
 
-  // Handle global keyboard movement controls for WASD / Arrow keys
+  // Subscribe to SongExperienceManager state changes
+  useEffect(() => {
+    return songExperienceManager.subscribe((nextState) => {
+      setActiveExperience(nextState);
+    });
+  }, []);
+
+  // Global keyboard movement controls (WASD / Arrow keys)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (gameStage !== 'LEVEL1_GAMEPLAY') return;
@@ -78,54 +95,72 @@ export default function App() {
     };
   }, [gameStage]);
 
-  // Start background space pad when app starts
+  // Unlock audio & start ambient space pad on first valid user gesture
   useEffect(() => {
-    const handleFirstUserClick = () => {
+    const handleUserGesture = () => {
+      audioEngine.unlockAudio();
       audioEngine.startAmbientSpacePad();
-      window.removeEventListener('click', handleFirstUserClick);
+      if (audioEngine.isAudioUnlocked()) {
+        window.removeEventListener('pointerdown', handleUserGesture);
+        window.removeEventListener('keydown', handleUserGesture);
+      }
     };
-    window.addEventListener('click', handleFirstUserClick);
+    window.addEventListener('pointerdown', handleUserGesture);
+    window.addEventListener('keydown', handleUserGesture);
 
     return () => {
-      window.removeEventListener('click', handleFirstUserClick);
+      window.removeEventListener('pointerdown', handleUserGesture);
+      window.removeEventListener('keydown', handleUserGesture);
     };
   }, []);
 
-  // Handler when BEGIN MISSION is clicked in intro
   const handleBeginMission = () => {
+    audioEngine.unlockAudio();
     audioEngine.startAmbientSpacePad();
     setGameStage('TRANSITION_TO_LEVEL1');
-
-    // Smooth camera transition duration (~2.5s)
     setTimeout(() => {
       setGameStage('LEVEL1_BRIEF');
     }, 2500);
   };
 
-  // Handler when player collects an album cover
+  // Triggered when player collects a floating album cover
   const handleCollectSong = (song: SongItem) => {
+    if (!songExperienceManager.canCollectAlbum()) return;
+
     setCollectedIds((prev) => {
       if (prev.includes(song.id)) return prev;
       return [...prev, song.id];
     });
-    setActivePreviewSong(song);
+    songExperienceManager.startExperience(song);
   };
 
-  // Handler when all 10 albums are collected and bridge is built
+  // Triggered when user launches a collected song world from the Album Collection modal
+  const handleRevisitExperience = (song: SongItem) => {
+    if (!songExperienceManager.canCollectAlbum()) return;
+    songExperienceManager.startExperience(song);
+  };
+
   const handleAllCollectedSequenceDone = () => {
     setGameStage('LEVEL1_COMPLETION');
   };
 
-  // Handler when player clicks CONTINUE in Level 1 completion
   const handleContinueToFinished = () => {
     setGameStage('LEVEL1_FINISHED');
   };
 
-  // Handler to restart Level 1 exploration
   const handleReplayLevel1 = () => {
+    songExperienceManager.forceReset();
     setCollectedIds([]);
-    setActivePreviewSong(null);
+    setIsJukeboxOpen(false);
     setGameStage('LEVEL1_GAMEPLAY');
+  };
+
+  const handleLaunchExperienceFromSummary = (song: SongItem) => {
+    songExperienceManager.forceReset();
+    setGameStage('LEVEL1_GAMEPLAY');
+    setTimeout(() => {
+      songExperienceManager.startExperience(song);
+    }, 80);
   };
 
   return (
@@ -134,6 +169,7 @@ export default function App() {
       <GameCanvas
         gameStage={gameStage}
         collectedIds={collectedIds}
+        activeExperience={activeExperience}
         onCollectSong={handleCollectSong}
         onAllCollectedSequenceDone={handleAllCollectedSequenceDone}
         playerControls={playerControls}
@@ -151,33 +187,40 @@ export default function App() {
 
       {/* Main HUD during Level 1 Gameplay & Completion */}
       {(gameStage === 'LEVEL1_GAMEPLAY' || gameStage === 'LEVEL1_COMPLETION') && (
-        <HUD
-          collectedCount={collectedIds.length}
-          totalCount={10}
-          activePreviewSong={activePreviewSong}
-          onOpenJukebox={() => setIsJukeboxOpen(true)}
-          playerControls={playerControls}
-          setPlayerControls={setPlayerControls}
-        />
+        <>
+          <HUD
+            collectedCount={collectedIds.length}
+            totalCount={TOTAL_SONGS_COUNT}
+            activeExperience={activeExperience}
+            onOpenJukebox={() => setIsJukeboxOpen(true)}
+            playerControls={playerControls}
+            setPlayerControls={setPlayerControls}
+          />
+          <ExperienceHUD experience={activeExperience} />
+        </>
       )}
 
-      {/* Level 1 Completion Sequence Banner */}
+      {/* Level 1 Completion Banner */}
       {gameStage === 'LEVEL1_COMPLETION' && (
         <CompletionOverlay onContinue={handleContinueToFinished} />
       )}
 
-      {/* Album Jukebox Modal */}
+      {/* Album Collection Modal */}
       {isJukeboxOpen && (
         <AlbumJukeboxModal
           collectedIds={collectedIds}
+          activeSongId={activeExperience.song?.id ?? null}
           onClose={() => setIsJukeboxOpen(false)}
-          onPlayPreview={(song) => setActivePreviewSong(song)}
+          onExperienceSong={handleRevisitExperience}
         />
       )}
 
-      {/* Level 1 Victory & Summary Screen */}
+      {/* Level 1 Summary / Victory Screen */}
       {gameStage === 'LEVEL1_FINISHED' && (
-        <VictoryScreen onReplayLevel1={handleReplayLevel1} />
+        <VictoryScreen
+          onReplayLevel1={handleReplayLevel1}
+          onLaunchExperienceFromSummary={handleLaunchExperienceFromSummary}
+        />
       )}
     </div>
   );
